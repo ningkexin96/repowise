@@ -11,6 +11,12 @@ how authentication behaves, the shape of an error, how the two SSE streams are
 sequenced, and the conventions several routes share. Start at `/docs` for a
 specific endpoint; come back here for the things a schema cannot state.
 
+Each GitHub release also carries the same document as an `openapi.json` asset
+(`https://github.com/repowise-dev/repowise/releases/latest/download/openapi.json`).
+Every operation in it has `x-repowise-stability`: `stable` routes are the
+integration surface, and breaking changes to them are named in the changelog;
+`internal` routes serve the bundled dashboard and can change in any release.
+
 Nothing in this document duplicates a route table on purpose. Where a fact
 below is derived from code, the file is named so the claim can be re-checked.
 The default API address is `http://127.0.0.1:7337` (`docs/reference/CLI_REFERENCE.md`).
@@ -178,7 +184,7 @@ file, every surface behaves exactly as described below.
 (`deps.py`, `client_is_local`). The known consequence is that a same-host
 reverse proxy makes every peer loopback, so that deployment shape still needs
 the key. `repowise serve --host 0.0.0.0` without a key prints a warning at
-startup (`packages/cli/src/repowise/cli/commands/serve_cmd.py`) and the
+startup (`packages/cli/src/repowise/cli/commands/serve_cmd/command.py`) and the
 requests themselves are refused as above. All three rows were exercised against
 a running app with a fabricated remote peer.
 

@@ -1,6 +1,6 @@
 # Repowise in CI
 
-Four gates judge a pull request, each on what the change adds rather than on
+Five gates judge a pull request, each on what the change adds rather than on
 the whole repository's past:
 
 | Gate | Question | Needs | History |
@@ -10,6 +10,7 @@ the whole repository's past:
 | `repowise coverage check --max-drop P` | Did this change lower project coverage by more than P points? | git, a coverage report, and one measured at the change's base | the merge-base with the target branch |
 | `repowise doc-drift --check` | Does the documentation still describe files, links and commands that exist? | git | none (full history only improves rename suggestions) |
 | `repowise security check` | Did this change add a secret or a risky call? | git | every commit of the change |
+| `repowise health check` | Did this change write new complex, deeply nested, oversized or duplicated code? | git | the merge-base with the target branch |
 | `repowise risk --fail-above-percentile P` | Is this change bigger and more spread out than P% of this repository's recent commits? | git | recent commits to rank against (at least 8) |
 
 None of them needs an index, a database, a model or an API key, and none
@@ -18,6 +19,7 @@ resolution, described once below. Each layer's own page has the detail:
 [test intelligence](../layers/TEST_INTELLIGENCE.md#patch-coverage-in-ci),
 [documentation drift](../layers/DOC_DRIFT.md#in-ci),
 [security](../layers/SECURITY.md#in-ci-repowise-security-check),
+[code health](../layers/CODE_HEALTH.md#in-ci-repowise-health-check),
 [change risk](../layers/CHANGE_RISK.md#in-ci).
 
 Doc drift's `--check` needs no index. `--kind symbol` adds symbol references
@@ -39,14 +41,14 @@ as a pass.
 **Formats.** `--format table` (the default) for a terminal, `json` for a
 script, `markdown` for a comment or a job artifact, and `github` for GitHub
 Actions: up to ten annotations on the changed lines, a notice counting the
-rest, and the markdown report appended to the job summary. Doc drift and
-security also write `sarif` for code scanning and `gitlab`, a GitLab Code
+rest, and the markdown report appended to the job summary. Doc drift,
+security and health also write `sarif` for code scanning and `gitlab`, a GitLab Code
 Quality report (a JSON issue list; findings a baseline accepted are left out).
 When a gate cannot evaluate, `gitlab` still prints a valid list, `[]`, and the
 GitLab template writes `[]` whenever the output does not parse, so the report
 artifact is never an invalid file.
 
-**The change being judged.** Coverage, security and risk take a revision range:
+**The change being judged.** Coverage, security, health and risk take a revision range:
 `origin/main...HEAD` (three dots: what the branch did since it forked, the
 pull request's view), `base..head`, or one commit. Without one they read the
 target branch from the CI's own variables (`GITHUB_BASE_REF`,
@@ -65,7 +67,7 @@ gates exit `2` rather than guess.
 
 ## Adopting the gates on an existing repository
 
-Coverage and security judge only what a change adds, so an old untested file
+Coverage, security and health judge only what a change adds, so an old untested file
 or an old finding never fails a new pull request. Doc drift checks the whole
 tree, so on a repository whose documentation has already drifted it fails from
 the first run. Record what is there once and fail only on new drift:
@@ -88,6 +90,14 @@ Security has a baseline too, for accepting a finding a change adds on purpose
 from then on. A `repowise-security-ignore` comment silences one false positive
 ([details](../layers/SECURITY.md#silencing-one-finding-repowise-security-ignore)).
 
+`--fail-on-baseline-growth` (the action's `fail-on-baseline-growth` input) keeps a
+baseline shrink-only: it fails either gate when the baseline lists a finding the
+same file at the change's base does not, so a change cannot hide new findings by
+re-saving it. A baseline the change adds for the first time passes.
+
+The health gate reads `.repowise/health-rules.json` as the change's base has it,
+so a rule a change adds or loosens applies from the next change on.
+
 ## GitHub Actions
 
 The repository is itself an action. It installs Repowise, runs the gates you
@@ -108,7 +118,7 @@ jobs:
       - run: pytest --cov=src --cov-report=lcov:coverage/lcov.info
       - uses: repowise-dev/repowise@main   # pin a release tag in production
         with:
-          checks: coverage,doc-drift,security,risk
+          checks: coverage,doc-drift,security,health,risk
           coverage-report: coverage/lcov.info
           coverage-fail-under: 80
           risk-fail-above-percentile: 95
@@ -119,11 +129,11 @@ release the action installs.
 
 | Input | Default | Meaning |
 |-------|---------|---------|
-| `checks` | `doc-drift,security` | Gates to run. Coverage needs a report and risk is a policy choice, so both are opt-in. |
+| `checks` | `doc-drift,security` | Gates to run. Coverage needs a report, and health and risk are policy choices, so all three are opt-in. |
 | `version` | latest | Repowise version to install. |
 | `python-version` | `3.12` | Python to run it with (3.11 or newer). |
 | `working-directory` | `.` | Where to run from. |
-| `base` | from the pull request | Revision range for coverage, security and risk. |
+| `base` | from the pull request | Revision range for coverage, security, health and risk. |
 | `coverage-report` | config, else discovery | Reports, one per line: a path or a glob (`artifacts/**/lcov.info`), optionally `path=prefix`. |
 | `coverage-fail-under` | `coverage.fail_under` | Minimum patch coverage percent. |
 | `coverage-min-coverable-lines` | `coverage.min_coverable_lines` | Small-change tolerance: a change with fewer changed executable lines than this never fails. |
@@ -134,12 +144,15 @@ release the action installs.
 | `doc-drift-baseline` | none | Committed baseline file. |
 | `security-fail-on` | `high` | Lowest severity that fails: `high`, `med`, `low`. |
 | `security-baseline` | none | Committed baseline file. |
+| `fail-on-baseline-growth` | `false` | Fail doc drift and security when their baseline gains an entry over the change's base. |
+| `health-fail-on` | `introduced` | What fails the health gate: `introduced`, or `worsened` to fail on findings the change made worse too. |
+| `health-fail-at` | `high` | Lowest severity that fails the health gate: `medium`, `high`, `critical`. |
 | `risk-fail-above-percentile` | none | With `risk` in `checks`, fail when the change ranks above this percentile of recent commits. Empty reports the rank without gating. |
-| `upload-sarif` | `false` | Upload doc drift and security findings to code scanning. |
+| `upload-sarif` | `false` | Upload doc drift, security and health findings to code scanning. |
 | `impacted-tests` | `false` | Select the tests the change needs (needs a cached `.repowise` index); see [below](#selecting-the-tests-a-change-needs). |
 | `impacted-tests-runner` | `auto` | `auto`, `pytest`, `go`, `jest` or `files`. |
 
-Outputs: `coverage`, `doc-drift`, `security` and `risk` hold each gate's exit
+Outputs: `coverage`, `doc-drift`, `security`, `health` and `risk` hold each gate's exit
 code (empty when not run), and `sarif-dir` the SARIF directory.
 `impacted-tests` holds the runner arguments (or `:all`), and `run-all-tests` is
 `false` only when that subset is safe to run alone.
@@ -149,7 +162,7 @@ so at a percentile P roughly (100 - P)% of changes fail it by construction.
 A failure asks for a split or a second reviewer, not a code fix, and there is
 no baseline to accept it with.
 
-A shallow checkout still works when coverage, security or risk runs: the action
+A shallow checkout still works when coverage, security, health or risk runs: the action
 fetches the missing history and the target branch first. Checking out with
 `fetch-depth: 0` skips that step.
 
@@ -166,6 +179,7 @@ there with a warning; the gates still run and still decide the check.
 - run: repowise coverage check --report coverage/lcov.info --fail-under 80 --format github
 - run: repowise doc-drift --check --format github
 - run: repowise security check --format github
+- run: repowise health check --format github
 - run: repowise risk --fail-above-percentile 95 --format github
 ```
 
@@ -209,7 +223,9 @@ variables: `REPOWISE_VERSION`, `REPOWISE_COVERAGE_MIN_COVERABLE_LINES`,
 `REPOWISE_COVERAGE_FAIL_UNDER_RISKY`, `REPOWISE_COVERAGE_BASE_REPORT` (space
 separated, like the report list), `REPOWISE_COVERAGE_MAX_DROP`,
 `REPOWISE_DOC_DRIFT_BASELINE`,
-`REPOWISE_SECURITY_BASELINE`, `REPOWISE_SECURITY_FAIL_ON`. Override any job's
+`REPOWISE_SECURITY_BASELINE`, `REPOWISE_SECURITY_FAIL_ON`, and
+`REPOWISE_HEALTH: "true"` (with `REPOWISE_HEALTH_FAIL_ON` and `REPOWISE_HEALTH_FAIL_AT`) for a
+`repowise-health` job that also writes `gl-code-quality-health.json`. Override any job's
 `image`, `rules` or `needs` in your own file as usual.
 
 GitLab can also draw line coverage in the merge request diff. That comes from
@@ -239,6 +255,7 @@ pip install repowise
 repowise coverage check "origin/$CHANGE_TARGET...HEAD" --report coverage/lcov.info --fail-under 80
 repowise doc-drift --check
 repowise security check "origin/$CHANGE_TARGET...HEAD"
+repowise health check "origin/$CHANGE_TARGET...HEAD"
 ```
 
 Bitbucket Pipelines and others work the same way with their own branch
@@ -261,11 +278,13 @@ a per-test coverage map (`repowise coverage add`) makes it more precise.
 - It also runs everything for: a missing or unreadable index; a per-test map at its row cap; a deleted file no known test used.
 - An index built at an older commit than the change's base is used as is. Files changed in between whose imports or module-name strings moved (any change beyond whitespace, outside Python and JavaScript/TypeScript) add the tests reaching them. It runs everything instead when that commit is not in the clone, or more than 1,000 files changed in between, or one of them is a lockfile, manifest, build or test config or `.repowise/config.yaml`. CI config and test data changed in between no longer force a full run: neither is imported.
 - Only `docs/` and root README-like files (README, CHANGELOG, LICENSE, CONTRIBUTING) are skipped, and only when no code names them (a test that reads `README.md` names it, and then runs); an empty line means only those changed.
-- Tests the graph cannot see into run with every subset, and the reasons say how many and why: a test not indexed or importing nothing it resolves; a Python, JavaScript or TypeScript test that lists and reads files under a source directory (the working directory, a module's location, or its own location climbed out of the test directory; never its fixtures, sibling data or a temporary directory); one that runs the project's own command, `python -m` module, code importing the project, or package `bin` in a child process; a Java or Kotlin `@SpringBootTest`, which loads the whole application context (a slice such as `@WebMvcTest` is selected through its imports). A test that inherits `@SpringBootTest` from a base class or carries it through a custom meta-annotation is not detected and is selected through its imports only. The indexer finds them once from each test's source and stores the reason, so selection reads it without opening test files. An index built before this check runs everything until `repowise update` checks its tests. A Python module named like a test but outside every test directory is not a test when the nearest pytest config's `testpaths` or `python_files` leaves it out, as a bare `pytest` does: it is selected through like any other code. The rule follows a bare `pytest` run, so a test that CI only names explicitly on the command line outside `testpaths` is not seen as one: list it in `tests.always_run`.
+- Tests the graph cannot see into run with every subset, and the reasons say how many and why: a test not indexed or importing nothing it resolves; a Python, JavaScript or TypeScript test that lists and reads files under a source directory (the working directory, a module's location, or its own location climbed out of the test directory; never its fixtures, sibling data or a temporary directory); one that runs the project's own command, `python -m` module, code importing the project, or package `bin` in a child process; a Java or Kotlin `@SpringBootTest`, which loads the whole application context (a slice such as `@WebMvcTest` is selected through its imports). A test that inherits `@SpringBootTest` from a base class or carries it through a custom meta-annotation is not detected and is selected through its imports only. The indexer finds them once from each test's source and stores the reason, so selection reads it without opening test files. An index built before this check runs everything until `repowise update` checks its tests. A Python module named like a test but outside every test directory is not a test when the nearest pytest config's `testpaths` or `python_files` leaves it out, as a bare `pytest` does: it is selected through like any other code. The rule follows a bare `pytest` run, so a test that CI only names explicitly on the command line outside `testpaths` is not seen as one: list it in `tests.always_run`. Inside a JavaScript or TypeScript `src` tree a `tests/` folder is not a test directory, since it often holds a product feature: a file there is a test when its name says so (`.test.`, `.spec.`) or a test directory such as `__tests__/` holds it.
+- A test the change reaches only through imports, more than one file away and with no call path, coverage or paired name, runs but is listed in `selected.import_closure` and counted apart in the summary: an import error breaks it, though nothing it calls runs the change.
 - A changed `conftest.py`, test package `__init__.py` or imported test helper selects the tests under or importing it, not everything.
 - A change that reaches a `conftest.py` only through its imports selects the tests that ask for a fixture using that change (directly, through other fixtures, `usefixtures` or `getfixturevalue`), plus one test under the conftest as an import check.
-  - Every test under the conftest still runs when an autouse fixture, a `pytest_*` hook or module-level code uses the change, or when the conftest imports it only for side effects.
-  - Reading a literal constant of an imported module, or calling one of its functions that uses nothing the module imports beyond standard modules that cannot load code by name (emptying a `functools` cache or a standard container counts), reaches only a change in that module itself. Ceiling: such a function that reads or runs repo files by path (`open`, `Path.read_text`, `os.system`) is judged by its imports only.
+  - Every test under the conftest still runs when an autouse fixture, a `pytest_*` hook or module-level code uses the change, or when the conftest imports it only for side effects. The tests it adds that nothing else reaches are listed in `selected.broadcast` and counted apart in the summary.
+  - Patching an attribute of an imported module or of a class in it (`monkeypatch.setattr(mod.Cls, "name", ...)`) in an autouse fixture is left to the import check.
+  - Reading a literal constant of an imported module, or calling one of its functions that uses nothing the module imports beyond standard modules that cannot load code by name (emptying a `functools` cache or a standard container counts), reaches only a change in that module itself. A module re-exporting such a name (`from .console import NAMES as NAMES`) passes this through to the module defining it. Ceiling: such a function that reads or runs repo files by path (`open`, `Path.read_text`, `os.system`) is judged by its imports only.
   - It also runs everything there when a fixture request cannot be read from the code (a computed name, a mark kept in a variable, a config `usefixtures`), when the conftest loads plugins or cannot be read, and on an index built before this was recorded. The reasons name the cause.
   - Ceiling: a change that only alters what the changed module does at import time, seen by a test that does not import it, is caught by the import check alone.
 - Wiring no import states counts as a use: a JS/TS setup file named under `setupFiles`, `setupFilesAfterEnv`, `globalSetup` or `globalTeardown` in a `vitest.*`, `jest.*`, `vite.*` or `playwright.*` config or a `package.json` stands for the tests in that config's package, and a helper a test names by a path relative to itself (`Path(__file__).parent / "server.py"`, `path.join(__dirname, "server.ts")`) stands for that test. A `conftest.py` links only the files pytest collects (its `python_files`), so a helper beside the tests is not on every route the conftest reaches.
@@ -300,7 +319,7 @@ jobs:
       - uses: actions/cache/restore@v4
         with: {path: .repowise, key: "repowise-${{ github.sha }}", restore-keys: "repowise-"}
       - run: pip install repowise
-      - run: if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --index-only; fi
+      - run: if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --no-prose; fi
       - uses: actions/cache/save@v4
         with: {path: .repowise, key: "repowise-${{ github.sha }}"}
 ```
@@ -334,7 +353,7 @@ repowise-index:
   variables: {GIT_DEPTH: "0"}
   script:
     - pip install repowise
-    - if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --index-only; fi
+    - if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --no-prose; fi
   cache: {key: repowise-index, paths: [.repowise/], policy: pull-push}
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
@@ -372,7 +391,9 @@ Several reports merge: a line any of them ran counts as run. A coverage.py
 do not line up with the repository (a build directory, a container path), set
 `coverage.strip_prefix` or `coverage.path_prefix` in `.repowise/config.yaml`.
 The gate reports how many report paths matched the repository, and exits `2`
-when none did, so a wrong prefix never passes as zero.
+when none did, so a wrong prefix never passes as zero. When more than half did
+not match, it suggests the prefix to set; `repowise coverage add` then stores
+nothing unless `--allow-partial` is passed.
 
 The threshold can live in config instead of the workflow:
 

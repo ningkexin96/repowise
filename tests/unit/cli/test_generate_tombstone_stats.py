@@ -13,6 +13,7 @@ from repowise.cli.commands.generate_cmd.engine import _page_stats
 from repowise.cli.helpers import load_state
 from repowise.core.persistence.crud import upsert_page, upsert_repository
 from repowise.core.persistence.database import init_db
+from repowise.core.persistence.models import Page
 
 
 @pytest.fixture
@@ -79,6 +80,22 @@ async def test_stub_count_stays_scoped_to_repository(session_factory, tmp_path):
         ("other-live", "module_page", "template", "fresh"),
     )
     assert await _page_stats(session_factory, repo_id) == (1, 0, set())
+
+
+async def test_tombstones_and_model_free_pages_are_both_excluded(session_factory, tmp_path):
+    repo_id = await _seed(
+        session_factory, tmp_path,
+        ("retired", "onboarding", "template", "tombstone"),
+        ("glossary", "onboarding", "template", "fresh"),
+        ("live", "module_page", "template", "stale"),
+    )
+    async with session_factory() as session:
+        glossary = await session.get(Page, "glossary")
+        assert glossary is not None
+        glossary.metadata_json = '{"model_free": true}'
+        await session.commit()
+
+    assert await _page_stats(session_factory, repo_id) == (3, 1, {"live"})
 
 
 @pytest.mark.parametrize("has_live_stub", [False, True])

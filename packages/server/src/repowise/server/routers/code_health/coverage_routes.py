@@ -21,9 +21,9 @@ from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.test_reachability import (
-    call_graph_from_db,
-    files_reached_by_tests,
-    load_test_files,
+    cached_files_reached_by_tests,
+    cached_hub_files,
+    cached_test_files,
     tests_reaching_by_tier,
 )
 from repowise.core.persistence import crud
@@ -217,7 +217,7 @@ async def _inferred_coverage(
     wrong trade.
     """
     try:
-        test_files = await load_test_files(session, repo_id)
+        test_files = await cached_test_files(session, repo_id)
         if not test_files:
             return {
                 "basis": "none",
@@ -257,8 +257,8 @@ async def _inferred_coverage(
                     "test_file_count": len(test_files),
                 },
             }
-        view = await call_graph_from_db(session, repo_id)
-        reached = files_reached_by_tests(view, test_files)
+        # Walked once per index state: the edge read is the cost of this tab.
+        reached = await cached_files_reached_by_tests(session, repo_id)
     except Exception:
         return {
             "basis": "none",
@@ -331,7 +331,9 @@ async def health_tests_reaching(
         "truncated": False,
     }
     try:
-        found = await tests_reaching_by_tier(session, repo_id, [file_path])
+        # A listing: tests that reach the file only through a hub go last.
+        hubs = await cached_hub_files(session, repo_id)
+        found = await tests_reaching_by_tier(session, repo_id, [file_path], hubs=hubs)
     except Exception:
         return empty
     reached = found.get(file_path)
@@ -344,7 +346,7 @@ async def health_tests_reaching(
         "reached": True,
         "tests": reached.tests,
         "via": reached.via,
-        # The walk's own count, which ``tests`` may be a trimmed alphabetical
+        # The walk's own count, which ``tests`` may be a ranked, trimmed
         # slice of. Without it a caller renders the cap as the answer.
         "total": total,
         "truncated": total > len(reached.tests),

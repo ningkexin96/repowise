@@ -7,15 +7,14 @@ emitting one :class:`TestCoverage` per ``(test, file)`` pair.
 
 Two sources carry per-test data today:
 
-- **coverage.py ``.coverage`` sqlite** written with
-  ``coverage run --contexts=test`` (static) or ``dynamic_context =
-  test_function`` (dynamic). The ``context`` table names each test; the
+- **coverage.py ``.coverage`` sqlite** with per-test contexts (static or
+  dynamic). The ``context`` table names each test; the
   ``line_bits`` / ``arc`` rows are keyed by ``(file_id, context_id)``.
 - **lcov ``TN:`` records** - the test-name line, blank in most merged lcov
   but populated by per-test lcov output.
 
 Both degrade loudly: a report produced *without* contexts (a plain lcov, or
-``coverage run`` with no ``--contexts``) yields ``records=[]`` and
+a ``.coverage`` without contexts) yields ``records=[]`` and
 ``has_contexts=False`` so callers report "aggregate only, per-test features
 unavailable" rather than silently emitting nothing.
 
@@ -32,8 +31,29 @@ from pathlib import Path
 from .lcov import _normalize_path
 from .model import ContextCoverageReport, TestCoverage
 
+#: The command the CLI recommends for a ``.coverage`` with per-test contexts.
+#: Needs pytest-cov; ``--cov-context=test`` names each context after its test.
+PER_TEST_COVERAGE_COMMAND = "pytest --cov --cov-context=test"
+
 # coverage.py sqlite files start with the standard SQLite magic header.
 _SQLITE_MAGIC = b"SQLite format 3\x00"
+
+#: Why a ``.coverage`` gives no per-file coverage: its schema stores the lines
+#: that ran, never the executable set, so no percentage can be taken from it.
+COVERAGE_DATA_FILE_NOTE = (
+    "a coverage.py data file records the lines that ran but not which lines are "
+    "executable, so it gives no per-file coverage; export it with `coverage lcov` "
+    "or `coverage xml` and add that report"
+)
+
+
+def is_coverage_data_file(path: str | Path) -> bool:
+    """True when *path* is a coverage.py ``.coverage`` sqlite (binary magic)."""
+    try:
+        with Path(path).open("rb") as fh:
+            return fh.read(len(_SQLITE_MAGIC)) == _SQLITE_MAGIC
+    except OSError:
+        return False
 
 
 def parse_lcov_contexts(text: str) -> ContextCoverageReport:
@@ -123,7 +143,7 @@ def parse_coverage_sqlite(db_path: str | Path) -> ContextCoverageReport:
 
     Reads the ``file`` / ``context`` / ``line_bits`` tables (falling back to
     ``arc`` endpoints when the db was written in branch/arc mode). Only
-    non-empty contexts become records; a db written without ``--contexts``
+    non-empty contexts become records; a db without contexts
     has a single empty context and comes back ``has_contexts=False``.
     """
     path = Path(db_path)
@@ -137,7 +157,7 @@ def parse_coverage_sqlite(db_path: str | Path) -> ContextCoverageReport:
         contexts = {cid: ctx for cid, ctx in conn.execute("SELECT id, context FROM context")}
         named = {cid: ctx for cid, ctx in contexts.items() if ctx}
         if not named:
-            # Ran without --contexts: one empty context, aggregate only.
+            # A .coverage without contexts: one empty context, aggregate only.
             return ContextCoverageReport(source_format="coverage.py", has_contexts=False)
 
         files = {fid: _normalize_path(p) for fid, p in conn.execute("SELECT id, path FROM file")}
@@ -200,15 +220,9 @@ def parse_contexts_file(path: str | Path) -> ContextCoverageReport:
     empty aggregate-only report rather than raising.
     """
     p = Path(path)
-    try:
-        with p.open("rb") as fh:
-            head = fh.read(len(_SQLITE_MAGIC))
-    except OSError:
-        return ContextCoverageReport(source_format="unknown", has_contexts=False)
-
-    if head == _SQLITE_MAGIC:
+    if is_coverage_data_file(p):
         return parse_coverage_sqlite(p)
     try:
         return parse_lcov_contexts(p.read_text(encoding="utf-8"))
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return ContextCoverageReport(source_format="unknown", has_contexts=False)
